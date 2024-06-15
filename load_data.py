@@ -38,7 +38,7 @@ class BERTClassifierDataset(Dataset):
     
 def create_collate_fn(tokenizer):
     def collate_fn(batch):
-        ids = [item['id'] for item in batch]
+        ids = torch.tensor([item['id'] for item in batch])
         texts = [item['text'] for item in batch]
         labels = torch.tensor([item['label'] for item in batch])
         # Tokenize and pad in one pass

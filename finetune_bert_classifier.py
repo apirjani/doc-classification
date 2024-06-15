@@ -5,6 +5,7 @@ from load_data import load_bert_data
 import csv
 import json
 from tqdm import tqdm
+import numpy as np
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -19,7 +20,7 @@ def get_args():
     parser.add_argument('--test_batch_size', type=int, default=32)
     parser.add_argument('--optimizer_type', type=str, default="AdamW", choices=["AdamW"],
                         help="What optimizer to use")
-    parser.add_argument('--learning_rate', type=float, default=5e-6)
+    parser.add_argument('--learning_rate', type=float, default=3e-4)
     parser.add_argument('--weight_decay', type=float, default=0.01)
     parser.add_argument('--label_smoothing', type=float, default=0.1)
     parser.add_argument('--scheduler_type', type=str, default="cosine", choices=["none", "cosine", "linear"],
@@ -62,6 +63,7 @@ def evaluate_model(model, dev_loader):
 
 
 def train(args, model, train_loader, dev_loader, optimizer, scheduler):
+    best_score = float('-inf')
     model.to(DEVICE)
     for epoch in range(args.num_epochs):
         model.train()
@@ -86,6 +88,11 @@ def train(args, model, train_loader, dev_loader, optimizer, scheduler):
 
         avg_train_loss = total_train_loss / len(train_loader)
         eval_loss = evaluate_model(model, dev_loader)
+        score = -eval_loss
+        
+        if score > best_score:
+            best_score = score
+            torch.save(model.state_dict(), 'best_model.pth')
 
         print(f"Training Loss: {avg_train_loss:.4f}")
         print(f"Validation Loss: {eval_loss:.4f}")
@@ -94,6 +101,7 @@ def predict(model, test_loader):
     model.eval()
     predictions = []
     ids = []
+    labels = []
 
     with torch.no_grad():
         for batch in test_loader:
@@ -105,13 +113,15 @@ def predict(model, test_loader):
             logits = outputs.logits
             preds = torch.argmax(logits, dim=1)
             predictions.extend(preds.cpu().numpy())
-            ids.extend(batch['ids'])
+            ids.extend(batch['ids'].cpu().numpy())
+            labels.extend(batch['labels'].cpu().numpy())
 
-    return predictions, ids
+    return predictions, ids, labels
 
 def compute_metrics(predictions, labels):
     # Compute accuracy over test set
-    accuracy = (predictions == labels).mean()
+
+    accuracy = np.mean(np.array(predictions) == np.array(labels))
     return accuracy
 
 def save_predictions(predictions, example_ids, labels, label_dict):
@@ -126,19 +136,22 @@ def save_predictions(predictions, example_ids, labels, label_dict):
 def load_label_mapping(file_path):
     with open(file_path, 'r') as file:
         label_dict = json.load(file)
+    
+    # we need the reverse mapping
+    label_dict = {int(v): k for k, v in label_dict.items()}
     return label_dict
 
 def main():
     args = get_args()
     train_loader, dev_loader, test_loader = load_bert_data(args.batch_size, args.test_batch_size)
-    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=11)
+    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=10)
     optimizer, scheduler = get_optimizer_and_scheduler(args, model, train_loader)
     print("Training model")
     train(args, model, train_loader, dev_loader, optimizer, scheduler)
 
-    print("Evaluating model on test set")
-    predictions, example_ids = predict(model, test_loader)
-    labels = [batch['labels'] for batch in test_loader]
+    model.load_state_dict(torch.load('best_model.pth'))
+    print("Evaluating trained model on test set")
+    predictions, example_ids, labels = predict(model, test_loader)
     accuracy = compute_metrics(predictions, labels)
     print(f"Test Accuracy: {accuracy:.4f}")
     label_dict = load_label_mapping("label_dict.json")
