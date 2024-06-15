@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import argparse
 from transformers import BertForSequenceClassification, BertTokenizer, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 from load_data import load_bert_data
@@ -6,6 +7,7 @@ import csv
 import json
 from tqdm import tqdm
 import numpy as np
+import matplotlib.pyplot as plt
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -141,21 +143,74 @@ def load_label_mapping(file_path):
     label_dict = {int(v): k for k, v in label_dict.items()}
     return label_dict
 
+def predict_with_confidence(model, loader):
+    model.eval()
+    all_scores = []
+    all_labels = []
+    all_ids = []
+    
+    with torch.no_grad():
+        for batch in loader:
+            inputs = {
+                'input_ids': batch['input_ids'].to(DEVICE),
+                'attention_mask': batch['attention_mask'].to(DEVICE)
+            }
+            outputs = model(**inputs)
+            logits = outputs.logits
+            scores = F.softmax(logits, dim=1)
+            all_scores.extend(scores.cpu().numpy())
+            all_labels.extend(batch['labels'].cpu().numpy())
+            all_ids.extend(batch['ids'].cpu().numpy())
+    
+    return all_scores, all_ids, all_labels
+
+def test_thresholds(scores, labels, threshold_range):
+    accuracies = []
+    for threshold in threshold_range:
+        predictions = [np.argmax(score) if max(score) >= threshold else 6  # 'other' label
+                       for score in scores]
+        accuracy = np.mean(np.array(predictions) == np.array(labels))
+        accuracies.append(accuracy)
+    return accuracies
+
+def plot_thresholds(threshold_range, accuracies):
+    plt.figure(figsize=(10, 5))
+    plt.plot(threshold_range, accuracies, marker='o')
+    plt.title('Accuracy vs Confidence Threshold')
+    plt.xlabel('Confidence Threshold')
+    plt.ylabel('Accuracy')
+    plt.grid(True)
+    plt.show()
+
 def main():
     args = get_args()
     train_loader, dev_loader, test_loader = load_bert_data(args.batch_size, args.test_batch_size)
-    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=10)
+    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=10)  # Excluding 'other'
     optimizer, scheduler = get_optimizer_and_scheduler(args, model, train_loader)
+    
     print("Training model")
     train(args, model, train_loader, dev_loader, optimizer, scheduler)
 
     model.load_state_dict(torch.load('best_model.pth'))
+    
+    print("Testing multiple thresholds on validation set")
+    scores, labels = predict_with_confidence(model, dev_loader)
+    threshold_range = np.linspace(0.5, 0.9, num=9)
+    accuracies = test_thresholds(scores, labels, threshold_range)
+    plot_thresholds(threshold_range, accuracies)
+
     print("Evaluating trained model on test set")
-    predictions, example_ids, labels = predict(model, test_loader)
-    accuracy = compute_metrics(predictions, labels)
-    print(f"Test Accuracy: {accuracy:.4f}")
+    scores, example_ids, labels = predict_with_confidence(model, test_loader)
+    best_threshold = threshold_range[np.argmax(accuracies)]
+    test_predictions = [np.argmax(score) if max(score) >= best_threshold else 10 for score in scores]
+    test_accuracy = np.mean(np.array(test_predictions) == np.array(labels))
+    print(f"Test Accuracy with best threshold {best_threshold}: {test_accuracy:.4f}")
     label_dict = load_label_mapping("label_dict.json")
-    save_predictions(predictions, example_ids, labels, label_dict)
+    save_predictions(test_predictions, example_ids, labels, label_dict)
+
+if __name__ == "__main__":
+    main()
+
 
 if __name__ == "__main__":
     main()
