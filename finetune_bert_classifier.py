@@ -71,6 +71,7 @@ def evaluate_model(model, dev_loader):
 def train(args, model, train_loader, dev_loader, optimizer, scheduler):
     best_score = float('-inf')
     model.to(DEVICE)
+    criterion = torch.nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     for epoch in range(args.num_epochs):
         model.train()
         total_train_loss = 0
@@ -83,8 +84,12 @@ def train(args, model, train_loader, dev_loader, optimizer, scheduler):
                 'attention_mask': batch['attention_mask'].to(DEVICE),
                 'labels': batch['labels'].to(DEVICE)
             }
+            labels = batch['labels'].to(DEVICE)
+
             outputs = model(**inputs)
-            loss = outputs.loss
+            logits = outputs.logits
+            
+            loss = criterion(logits, labels)
 
             loss.backward()
             optimizer.step()
