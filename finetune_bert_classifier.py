@@ -1,13 +1,12 @@
 import torch
 import torch.nn.functional as F
 import argparse
-from transformers import BertForSequenceClassification, BertTokenizer, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
+from transformers import BertForSequenceClassification
 from load_data import load_bert_data
-import csv
-import json
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
+from utils import get_optimizer_and_scheduler, save_predictions, load_label_mapping
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -31,19 +30,6 @@ def get_args():
     args = parser.parse_args()
     return args
     
-def get_optimizer_and_scheduler(args, model, train_loader):
-    num_training_steps = args.num_epochs * len(train_loader)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    
-    if args.scheduler_type == "cosine":
-        scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
-    elif args.scheduler_type == "linear":
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
-    else:
-        scheduler = None
-    
-    return optimizer, scheduler
 
 def evaluate_model(model, dev_loader):
     model.eval()
@@ -131,26 +117,8 @@ def predict(model, test_loader):
 
 def compute_metrics(predictions, labels):
     # Compute accuracy over test set
-
     accuracy = np.mean(np.array(predictions) == np.array(labels))
     return accuracy
-
-def save_predictions(predictions, example_ids, labels, label_dict):
-    # Save predictions to a CSV file
-    # The CSV file should have two columns: "id" and "prediction" and "labels"
-    with open('predictions.csv', 'w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(['id', 'prediction', 'label'])
-        for i, (pred, label) in enumerate(zip(predictions, labels)):
-            writer.writerow([example_ids[i], label_dict[pred], label_dict[label]])
-
-def load_label_mapping(file_path):
-    with open(file_path, 'r') as file:
-        label_dict = json.load(file)
-    
-    # we need the reverse mapping
-    label_dict = {int(v): k for k, v in label_dict.items()}
-    return label_dict
 
 def predict_with_confidence(model, loader):
     model.eval()
@@ -189,7 +157,7 @@ def plot_thresholds(threshold_range, accuracies):
     plt.xlabel('Confidence Threshold')
     plt.ylabel('Accuracy')
     plt.grid(True)
-    plt.savefig('threshold_accuracy_plot.png')  # Saves the plot as a PNG file
+    plt.savefig('threshold_accuracy_plot.png')
     plt.close()
 
 
