@@ -17,13 +17,13 @@ def get_args():
     '''
     parser = argparse.ArgumentParser(description='BERT Classifier training loop')
 
-    parser.add_argument('--num_epochs', type=int, default=3)
+    parser.add_argument('--num_epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--test_batch_size', type=int, default=32)
     parser.add_argument('--optimizer_type', type=str, default="AdamW", choices=["AdamW"],
                         help="What optimizer to use")
-    parser.add_argument('--learning_rate', type=float, default=3e-4)
-    parser.add_argument('--weight_decay', type=float, default=0.01)
+    parser.add_argument('--learning_rate', type=float, default=5e-6)
+    parser.add_argument('--weight_decay', type=float, default=0.05)
     parser.add_argument('--label_smoothing', type=float, default=0.1)
     parser.add_argument('--scheduler_type', type=str, default="cosine", choices=["none", "cosine", "linear"],
                         help="Whether to use a LR scheduler and what type to use if so")
@@ -48,20 +48,24 @@ def get_optimizer_and_scheduler(args, model, train_loader):
 def evaluate_model(model, dev_loader):
     model.eval()
     total_loss = 0
+    valid_batches = 0
 
     with torch.no_grad():
         for batch in tqdm(dev_loader, desc="Evaluating"):
-            inputs = {
-                'input_ids': batch['input_ids'].to(DEVICE),
-                'attention_mask': batch['attention_mask'].to(DEVICE),
-                'labels': batch['labels'].to(DEVICE)
-            }
-            outputs = model(**inputs)
-            loss = outputs.loss
+            valid_labels = batch['labels'] < 10  # Boolean mask for labels within bounds
+            if valid_labels.any():  # Only proceed if there are any valid labels
+                inputs = {
+                    'input_ids': batch['input_ids'][valid_labels].to(DEVICE),
+                    'attention_mask': batch['attention_mask'][valid_labels].to(DEVICE),
+                    'labels': batch['labels'][valid_labels].to(DEVICE)
+                }
+                outputs = model(**inputs)
+                loss = outputs.loss
+                total_loss += loss.item()
+                valid_batches += 1
 
-            total_loss += loss.item()
+        return total_loss / valid_batches if valid_batches > 0 else 0
 
-        return total_loss / len(dev_loader)
 
 
 def train(args, model, train_loader, dev_loader, optimizer, scheduler):
@@ -167,7 +171,7 @@ def predict_with_confidence(model, loader):
 def test_thresholds(scores, labels, threshold_range):
     accuracies = []
     for threshold in threshold_range:
-        predictions = [np.argmax(score) if max(score) >= threshold else 6  # 'other' label
+        predictions = [np.argmax(score) if max(score) >= threshold else 10  # 'other' label
                        for score in scores]
         accuracy = np.mean(np.array(predictions) == np.array(labels))
         accuracies.append(accuracy)
@@ -180,7 +184,9 @@ def plot_thresholds(threshold_range, accuracies):
     plt.xlabel('Confidence Threshold')
     plt.ylabel('Accuracy')
     plt.grid(True)
-    plt.show()
+    plt.savefig('threshold_accuracy_plot.png')  # Saves the plot as a PNG file
+    plt.close()
+
 
 def main():
     args = get_args()
@@ -194,23 +200,20 @@ def main():
     model.load_state_dict(torch.load('best_model.pth'))
     
     print("Testing multiple thresholds on validation set")
-    scores, labels = predict_with_confidence(model, dev_loader)
-    threshold_range = np.linspace(0.5, 0.9, num=9)
+    scores, _, labels = predict_with_confidence(model, dev_loader)
+    threshold_range = np.linspace(0.3, 0.7, num=9)
     accuracies = test_thresholds(scores, labels, threshold_range)
     plot_thresholds(threshold_range, accuracies)
+    best_threshold = threshold_range[np.argmax(accuracies)]
+    print(f"Best threshold: {best_threshold}")
 
     print("Evaluating trained model on test set")
     scores, example_ids, labels = predict_with_confidence(model, test_loader)
-    best_threshold = threshold_range[np.argmax(accuracies)]
     test_predictions = [np.argmax(score) if max(score) >= best_threshold else 10 for score in scores]
     test_accuracy = np.mean(np.array(test_predictions) == np.array(labels))
     print(f"Test Accuracy with best threshold {best_threshold}: {test_accuracy:.4f}")
     label_dict = load_label_mapping("label_dict.json")
     save_predictions(test_predictions, example_ids, labels, label_dict)
-
-if __name__ == "__main__":
-    main()
-
 
 if __name__ == "__main__":
     main()

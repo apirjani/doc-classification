@@ -6,3 +6,4 @@ tqdm==4.66.1
 pandas
 fastapi
 uvicorn
+matplotlib
